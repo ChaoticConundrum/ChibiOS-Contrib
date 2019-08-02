@@ -219,81 +219,9 @@ OSAL_IRQ_HANDLER(HT32_USB_IRQ_VECTOR) {
         usb_clear_int_flags(USBISR_RSMIF);
     }
 
-    // EP0 Interrupt
-    if(isr & USBISR_EP0IF){
-        uint32_t episr = usb_get_ep_int_flags(0);
-
-#if 0
-        // SETUP Token Received
-        if(episr & USBEPnISR_STRXIF){
-            usb_clear_ep_int_flags(0, USBEPnISR_STRXIF);
-        }
-#endif
-
-        // SETUP Data Received
-        if(episr & USBEPnISR_SDRXIF){
-            // SETUP callback
-            _usb_isr_invoke_setup_cb(usbp, 0);
-            usb_clear_ep_int_flags(0, USBEPnISR_SDRXIF);
-        }
-
-#if 0
-        // OUT Token Received
-        if(episr & USBEPnISR_OTRXIF){
-            usb_clear_ep_int_flags(0, USBEPnISR_OTRXIF);
-        }
-#endif
-
-        // OUT Data Received
-        if(episr & USBEPnISR_ODRXIF){
-            USBOutEndpointState *osp = usbp->epc[0]->out_state;
-            size_t n = usb_packet_receive(usbp, 0);
-            if ((n < usbp->epc[0]->out_maxsize) || (osp->rxpkts == 0)) {
-                // OUT callback
-                _usb_isr_invoke_out_cb(usbp, 0);
-            } else {
-                USB->EP[0].CSR &= USBEPnCSR_NAKRX;
-            }
-            usb_clear_ep_int_flags(0, USBEPnISR_ODRXIF);
-        }
-
-#if 0
-        // IN Token Received
-        if(episr & USBEPnISR_ITRXIF){
-            usb_clear_ep_int_flags(0, USBEPnISR_ITRXIF);
-        }
-#endif
-
-        // IN Data Transmitted
-        if(episr & USBEPnISR_IDTXIF){
-            USBInEndpointState *isp = usbp->epc[0]->in_state;
-            size_t n = isp->txlastpktlen;
-            isp->txcnt += n;
-            if (isp->txcnt < isp->txsize) {
-                isp->txbuf += n;
-                osalSysLockFromISR();
-                usb_packet_transmit(usbp, 0, isp->txsize - isp->txcnt);
-                osalSysUnlockFromISR();
-            } else {
-                // IN callback
-                _usb_isr_invoke_in_cb(usbp, 0);
-            }
-            usb_clear_ep_int_flags(0, USBEPnISR_IDTXIF);
-        }
-
-#if 0
-        // STALL Transmitted
-        if(episr & USBEPnISR_STLIF){
-            usb_clear_ep_int_flags(0, USBEPnISR_STLIF);
-        }
-#endif
-
-        usb_clear_int_flags(USBISR_EP0IF);
-    }
-
-    // EP 1-7 Interrupt
-    uint32_t mask = USBISR_EP1IF;
-    for(int i = 1; i < 8; ++i){
+    // EP 0-7 Interrupt
+    uint32_t mask = USBISR_EP0IF;
+    for(int i = 0; i < 8; ++i){
         // EPn Interrupt
         if(isr & mask){
             uint32_t episr = usb_get_ep_int_flags(i);
@@ -301,23 +229,22 @@ OSAL_IRQ_HANDLER(HT32_USB_IRQ_VECTOR) {
             usb_clear_ep_int_flags(i, episr);
             usb_clear_int_flags(mask);
 
+            if ((isr & USBISR_URSTIF)
+                || (usbp->epc[i] == NULL)) {
+              mask = mask << 1;
+              continue;
+            }
 #if 0
-            // OUT Token Received
-            if(episr & USBEPnISR_OTRXIF){
-                usb_clear_ep_int_flags(i, USBEPnISR_OTRXIF);
+            // SETUP Token Received
+            if(episr & USBEPnISR_STRXIF){
+              usb_clear_ep_int_flags(i, USBEPnISR_STRXIF);
             }
 #endif
 
-            // OUT Data Received
-            if(episr & USBEPnISR_ODRXIF){
-                USBOutEndpointState *osp = usbp->epc[i]->out_state;
-                size_t n = usb_packet_receive(usbp, i);
-                if ((n < usbp->epc[i]->out_maxsize) || (osp->rxpkts == 0)) {
-                    // OUT callback
-                    _usb_isr_invoke_out_cb(usbp, i);
-                } else {
-                    USB->EP[i].CSR &= USBEPnCSR_NAKRX;
-                }
+            // SETUP Data Received
+            if(episr & USBEPnISR_SDRXIF){
+              // SETUP callback
+              _usb_isr_invoke_setup_cb(usbp, i);
             }
 
 #if 0
@@ -340,6 +267,25 @@ OSAL_IRQ_HANDLER(HT32_USB_IRQ_VECTOR) {
                 } else {
                     // IN callback
                     _usb_isr_invoke_in_cb(usbp, i);
+                }
+            }
+
+#if 0
+            // OUT Token Received
+            if(episr & USBEPnISR_OTRXIF){
+                usb_clear_ep_int_flags(i, USBEPnISR_OTRXIF);
+            }
+#endif
+
+            // OUT Data Received
+            if(episr & USBEPnISR_ODRXIF){
+                USBOutEndpointState *osp = usbp->epc[i]->out_state;
+                size_t n = usb_packet_receive(usbp, i);
+                if ((n < usbp->epc[i]->out_maxsize) || (osp->rxpkts == 0)) {
+                    // OUT callback
+                    _usb_isr_invoke_out_cb(usbp, i);
+                } else {
+                    USB->EP[i].CSR &= USBEPnCSR_NAKRX;
                 }
             }
 
@@ -442,6 +388,7 @@ void usb_lld_reset(USBDriver *usbp) {
     // USB Reset
     // Clear CSR, except for DP pull up
     USB->CSR &= USBCSR_DPPUEN;
+    USB->DEVAR = 0;
 
     /* Post reset initialization.*/
     usbp->epmem_next = 8;
@@ -463,7 +410,6 @@ void usb_lld_reset(USBDriver *usbp) {
  * @notapi
  */
 void usb_lld_set_address(USBDriver *usbp) {
-    USB->CSR |= USBCSR_ADRSET;
     USB->DEVAR = usbp->address & 0x7f;
 }
 
